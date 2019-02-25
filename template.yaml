@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Automated 24hrs DynamoDb Backups
+
+Resources:
+  DynamoDBBackupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: DynamoDBBackupLambda
+      Handler: index.handler
+      Runtime: nodejs8.10
+      Timeout: 5
+      MemorySize: 128
+      Role: 
+        Fn::GetAtt:
+          - "LambdaRole"
+          - "Arn"
+      Code:
+        ZipFile: >
+            const aws = require('aws-sdk');
+            const dynamodb = new aws.DynamoDB();
+            exports.handler = (event, context, callback) => 
+                Promise.resolve([
+                 'FDHDealers-staging', 
+                 'FDHFileStatus-staging',
+                 'FDHInspectionOrders-staging', 
+                 'FDHProducers-staging', 
+                 'FDHProducts-staging', 
+                 'FDHRBACUsers-staging', 
+                 'FDHSKUs-staging',
+                 'FDHSKUVersions-staging', 
+                 'FDHVariants-staging'])
+                    .then(tables => 
+                          tables.map(t => 
+                              dynamodb.createBackup({TableName: t, BackupName: t + '_' +  Date.now()}).promise()))
+                    .then(ps => Promise.all(ps))
+                    .then(() => 'success')
+                    .catch(e => 'error: ' + e)
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaDynamoDBBackup
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+
+  LambdaPolicy:
+    DependsOn:
+      - LambdaRole
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: LambdaBackupPolicy
+      Roles: 
+        -  Ref: LambdaRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:CreateBackup
+            Resource: 
+              Fn::Join:
+                - ''
+                - - 'arn:aws:dynamodb:'
+                  - !Ref AWS::Region
+                  - ':'
+                  - !Ref AWS::AccountId
+                  - ':table/*'
+
+  CloudWatch24HRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Trigger Lambda every 24 hours to make an backup
+      ScheduleExpression: rate(24 hours)
+      Name: DynamoDBBackup
+      State: ENABLED
+      Targets:
+        - Arn:
+            Fn::GetAtt: [DynamoDBBackupFunction, Arn]
+          Id: dynamodbb01943
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Ref: DynamoDBBackupFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn:
+        Fn::GetAtt:
+          - CloudWatch24HRule
+          - Arn
